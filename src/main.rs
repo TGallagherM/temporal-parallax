@@ -1,11 +1,19 @@
-use chrono::{DateTime, Duration, Local, TimeZone, Utc};
+use chrono::{DateTime, Duration, Local, Utc};
 use chrono_tz::Tz;
-use iced::alignment::{Horizontal, Vertical};
 use iced::widget::{button, column, container, row, text};
-use iced::{executor, time, Application, Command, Element, Length, Settings, Subscription};
+use iced::{Element, Length, Task, time};
 use std::time::Duration as StdDuration;
-fn main() {
-    
+
+fn main() -> iced::Result {
+    iced::application(
+        || (ClockApp::default(), Task::none()),
+        update,
+        view,
+    )
+    .subscription(|_| {
+        time::every(StdDuration::from_secs(1)).map(Message::Tick)
+    })
+    .run()
 }
 
 #[derive(Clone, Debug)]
@@ -25,13 +33,10 @@ struct ClockApp {
     sync_status: String,
     timezone_configs: Vec<TimezoneConfig>,
 }
-impl Application for ClockApp {
-    type Executor = executor::Default;
-    type Message = Message;
-    type Flags = ();
 
-    fn new(_flags: ()) -> (Self, Command<Self::Message>) {
-        let app = ClockApp {
+impl Default for ClockApp {
+    fn default() -> Self {
+        Self {
             is_24h: true,
             ntp_offset_seconds: 0,
             last_sync: None,
@@ -54,34 +59,73 @@ impl Application for ClockApp {
                     tz: "Europe/London".parse().unwrap(),
                 },
             ],
-        };
-
-        (app, Command::none())
+        }
     }
+}
 
-    fn title(&self) -> String {
-        String::from("Temporal Parallax Clock")
+fn update(clock: &mut ClockApp, message: Message) -> Task<Message> {
+    match message {
+        Message::Tick(_) => Task::none(),
+        Message::ToggleFormat => {
+            clock.is_24h = !clock.is_24h;
+            Task::none()
+        }
+        Message::TimeSynced(result) => {
+            match result {
+                Ok(offset) => {
+                    clock.ntp_offset_seconds = offset;
+                    clock.last_sync = Some(Local::now());
+                    clock.sync_status = format!("Synced: {:+} seconds", offset);
+                }
+                Err(error) => {
+                    clock.sync_status = format!("Sync failed: {}", error);
+                }
+            }
+            Task::none()
+        }
     }
+}
 
-    fn update(&mut self, message: Self::Message) -> Command<Self::Message> {
-        Command::none()
-    }
+fn view(clock: &ClockApp) -> Element<'_, Message> {
+    let title = text("Temporal Parallax Clock").size(32);
 
-    fn subscription(&self) -> Subscription<Self::Message> {
-        time::every(StdDuration::from_secs(1)).map(Message::Tick)
-    }
+    let toggle_button = button(if clock.is_24h {
+        "Switch to 12h"
+    } else {
+        "Switch to 24h"
+    })
+    .on_press(Message::ToggleFormat);
 
-    fn view(&self) -> Element<Self::Message> {
-        let title = text("Temporal Parallax Clock")
-            .size(32);
+    let status = text(format!(
+        "{} | Last sync: {}",
+        clock.sync_status,
+        clock.last_sync
+            .map(|t| t.format("%H:%M:%S").to_string())
+            .unwrap_or_else(|| "never".to_string())
+    ));
 
-        container(title)
-            .center_x()
-            .center_y()
-            .width(Length::Fill)
-            .height(Length::Fill)
-            .into()
-    }
+    let timezone_rows =
+        clock.timezone_configs.iter().fold(column!().spacing(10), |column, config| {
+            let time = clock.format_time(clock.current_corrected_utc(), config.tz);
+            column.push(
+                row![
+                    text(config.label).width(Length::FillPortion(1)),
+                    text(time).width(Length::FillPortion(2))
+                ]
+                .spacing(20),
+            )
+        });
+
+    let content = column![title, toggle_button, status, timezone_rows]
+        .spacing(20)
+        .padding(20);
+
+    container(content)
+        .center_x(Length::Fill)
+        .center_y(Length::Fill)
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .into()
 }
 
 impl ClockApp {
